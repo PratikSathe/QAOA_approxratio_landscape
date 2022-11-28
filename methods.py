@@ -1,12 +1,29 @@
 
 from qiskit import QuantumCircuit, Aer, execute
 
-reverseStep = -1 # To take into account the little-endian format used in qiskit
-
-def get_metric_for_angles(nodes, edges, betas, gammas, num_shots, metric_type = 'approx_ratio'):
-    cuts, counts = get_cut_distribution(nodes, edges, betas, gammas, num_shots)
+def get_size_dist(counts, sizes):
+    """ For given measurement outcomes, i.e. combinations of cuts, counts and sizes, return counts corresponding to each cut size.
+    Args:
+        counts (list): List of integers, denoting number of times each cut was measured 
+        sizes (list): List of integers. Cut size corresponding to each measured cut
+    Returns:
+        unique_counts (list) : Number of times each size was obtained
+        unique_sizes (list) : List of all sizes
+    """
+    unique_sizes = list(set(sizes))
+    unique_counts = [0] * len(unique_sizes)
     
+    for i, size in enumerate(unique_sizes):
+        # corresp_counts = [counts[ind] for ind,s in enumerate(sizes) if s == size]
+        corresp_counts = [c for (c,s) in zip(counts, sizes) if s == size]
+        unique_counts[i] = sum(corresp_counts)
     
+    # Make sure that the scores are in non-decreasing order
+    s_and_c_list = [[a,b] for (a,b) in zip(unique_sizes, unique_counts)] #size and cut list
+    s_and_c_list = sorted(s_and_c_list, key = lambda x : x[0]) # sort according to sizes
+    unique_sizes = [x[0] for x in s_and_c_list]
+    unique_counts = [x[1] for x in s_and_c_list]
+    return unique_counts, unique_sizes
     
     
 class qaoa_anstaz:
@@ -63,15 +80,13 @@ class qaoa_anstaz:
         
         self.cuts = list(cuts_counts_dict.keys())
         self.counts = list(cuts_counts_dict.values())
-        self.sizes = [eval_cut(self.nodes, self.edges, solution[::-1]) for solution in cuts] # Reverse each cut passed ot eval_cut, since qiskit uses the little-endian format
+        self.sizes = [self.eval_cut(solution[::-1]) for solution in self.cuts] # Reverse each cut passed ot eval_cut, since qiskit uses the little-endian format
         
     
     def create_ansatz_circuit(self):
         """
         Create the ansatz circuit (determined by the β and γ parameters)
         """
-        
-
         self.circuit = QuantumCircuit(self.nodes)
         for i in range(self.nodes):
             # Apply the Hadamard gate on each qubit
