@@ -5,6 +5,8 @@ import math
 import networkx as nx
 import matplotlib.pyplot as plt
 from itertools import product as iterprod
+from qiskit.tools.visualization import circuit_drawer
+
 
 def get_size_dist(counts, sizes, optimal_size):
     """ For given measurement outcomes, i.e. combinations of counts and sizes, return counts corresponding to each cut size.
@@ -129,7 +131,7 @@ def compute_gibbs(counts, sizes, eta = 0.5, **kwargs):
     
     # gibbs = - np.log( np.sum(counts * np.exp(eta * sizes)) / np.sum(counts))
     gibbs = - eta * ls - np.log(np.sum (counts / np.sum(counts) * np.exp(eta * shifted_sizes)))
-    return gibbs
+    return -gibbs
 
 
 def compute_best_cut_from_measured(counts, sizes, **kwargs):
@@ -139,7 +141,7 @@ def compute_best_cut_from_measured(counts, sizes, **kwargs):
     return np.max(sizes)
     
 class qaoa_anstaz:
-    def __init__(self, nodes, edges, betas, gammas, num_shots = 5000, eta = 0.5, optimal_cut = [], optimal_size = -1):
+    def __init__(self, nodes, edges, betas, gammas, num_shots = 5000, eta = 0.5, alpha = 0.1, optimal_cut = [], optimal_size = -1):
         """
         Initialize a class for a QAOA ansatz circuit. Create corresponding circuit as well.
 
@@ -149,6 +151,10 @@ class qaoa_anstaz:
             betas (list of floats): List of β angles. Number of rounds is equal to the length of this list.
             gammas (list of floats): List of γ angles. Number of rounds is equal to the length of this list.
             num_shots (int): Number of times the qaoa ansatz circuit is to be measured
+            eta (float): Number between 0 and 1. Parameter for Gibbs' objective function
+            alpha (float): Number between 0 and 1. Parameter for CVaR function.
+            optimal_cut (list): List of length=nodes. Each element is 0 or 1. This list specifies one (out of possibl multiple) answers for the maxcut problem. If not specified, it is computed using a brute force approach while initialization.
+            optimal_size (int): The max cut size (i.e. the solution to the maxcut problem). If not specified, it is computed using a brute force approach while initialization.
         """
         self.nodes = nodes
         self.edges = edges
@@ -156,6 +162,7 @@ class qaoa_anstaz:
         self.gammas = gammas
         self.num_shots = num_shots
         self.eta = eta
+        self.alpha = alpha
         self.nxgraph = nx.from_edgelist(edges)
         
         assert len(self.betas) == len(self.gammas), "Betas and Gammas lists should be of the same length"
@@ -184,9 +191,10 @@ class qaoa_anstaz:
         unif_cuts = list(set(unif_cuts))
 
         def int_to_bs(numb):
-            # Function for converting from an integer to (bit)strings of length num_qubits
+            # Function for converting from an integer to list of 0's and 1's
             strr = format(numb, "b") #convert to binary
-            strr = '0' * (num_qubits - len(strr)) + strr
+            strr = '0' * (self.nodes - len(strr)) + strr
+            strr = list(strr)
             return strr
 
         unif_cuts = [int_to_bs(i) for i in unif_cuts]
@@ -200,8 +208,8 @@ class qaoa_anstaz:
         nx.draw(self.nxgraph)
     
     def draw_ansatz(self):
-        self.circuit.draw(output='mpl')
-    
+        circuitdiagram = circuit_drawer(self.circuit)
+        print(circuitdiagram)
     
     def brute_force_compute_maxcut(self):
         """Compute the max cut size and (one of possibly multiple) max cut.
@@ -237,7 +245,7 @@ class qaoa_anstaz:
         """
         # Implement a noiseless simulation using the qasm_simulator 
         backend = Aer.get_backend('qasm_simulator')
-        cuts_counts_dict = backend.run(self.circuit, nshots=self.num_shots).result().get_counts() # Dictionary of ('bitstring', number of times it was measured) pairs
+        cuts_counts_dict = backend.run(self.circuit, shots=self.num_shots).result().get_counts() # Dictionary of ('bitstring', number of times it was measured) pairs
         
         self.cuts = list(cuts_counts_dict.keys())
         self.counts = list(cuts_counts_dict.values())
@@ -255,7 +263,7 @@ class qaoa_anstaz:
         self.energy_expectation = compute_energy_expectation(self.counts, self.sizes)
         
         self.bestcut_ratio = self.best_measured_size / self.optimal_size
-        self.gibbs_ratio = self.gibbs / self.optimal_size
+        self.gibbs_ratio = self.gibbs / self.optimal_size / self.eta
         self.cvar_ratio = self.cvar / self.optimal_size
         self.approx_ratio = self.energy_expectation / self.optimal_size
         
@@ -265,26 +273,23 @@ class qaoa_anstaz:
         suptitle = "Empirical Distribution of Cut Sizes\n Graph Size={}".format(self.nodes)
         plt.title(suptitle)
 
-        axs.plot(self.dist_sizes, dist_counts, marker='o',
-                 ls='-', c='k', ms=2, mec='k', mew=0.4, lw=1,
-                 label=f"Circuit Sampling")
+        axs.plot(np.array(self.dist_sizes) / self.optimal_size, np.array(self.dist_counts) / self.num_shots, marker='o',ls='-', c='k', ms=2, mec='k', mew=0.4, lw=1, label=f"Circuit Sampling")
 
         # Also plot the distribution obtained from uniform random sampling
-        axs.plot(dist['ratios'][indx], dist['frequencies'][indx],
+        axs.plot(np.array(self.unif_dist_sizes) / self.optimal_size, np.array(self.unif_dist_counts) / self.num_shots,
              marker='o', ms=1, mec = 'k',mew=0.2, lw=10,alpha=0.5,
              ls = '-', label = "Uniform Random Sampling", c = "pink")  # " degree={deg}") # lw=1,
 
-        # Plot vertical lines corresponding to the various metrics
-        plotted_metric_values = []
-        for metric in ['approx_ratio', 'cvar_ratio', 'bestcut_ratio', 'gibbs_ratio']:
-            curdict = group_metrics_optgaps[metric]
-            curmetricval = curdict['ratiovals'][indx]
-            lw=1; ls='solid'
-            if curmetricval in plotted_metric_values:
-                # for lines that will coincide, assign different styles to distinguish them
-                lw=1.5; ls='dashed'
-            plotted_metric_values.append(curmetricval)
-            axs.axvline(x=curmetricval, color=curdict['color'], label=curdict['label'], lw=lw, ls=ls)
+        # # Plot vertical lines corresponding to the various metrics
+        # plotted_metric_values = []
+        # for metric in ['approx_ratio', 'cvar_ratio', 'bestcut_ratio', 'gibbs_ratio']:
+        #     lw=1; ls='solid'
+        #     curmetricval = 
+        #     if curmetricval in plotted_metric_values:
+        #         # for lines that will coincide, assign different styles to distinguish them
+        #         lw=1.5; ls='dashed'
+        #     plotted_metric_values.append(curmetricval)
+        #     axs.axvline(x=curmetricval, color=curdict['color'], label=curdict['label'], lw=lw, ls=ls)
             
 
         axs.set_ylabel('Fraction of Total Counts')
