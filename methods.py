@@ -6,14 +6,15 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from itertools import product as iterprod
 
-def get_size_dist(counts, sizes):
+def get_size_dist(counts, sizes, optimal_size):
     """ For given measurement outcomes, i.e. combinations of counts and sizes, return counts corresponding to each cut size.
     Args:
         counts (list): List of integers, denoting number of times each cut was measured 
         sizes (list): List of integers. Cut size corresponding to each measured cut
+        optimal_size (int) : Max cut size for the graph
     Returns:
-        unique_counts (list) : Number of times each size was obtained
-        unique_sizes (list) : List of all sizes
+        full_counts_list (list) : Number of times each size was obtained
+        full_size_list (list) : List of all possible sizes (0,1,...,optimal_size)
     """
     unique_sizes = list(set(sizes))
     unique_counts = [0] * len(unique_sizes)
@@ -28,7 +29,11 @@ def get_size_dist(counts, sizes):
     s_and_c_list = sorted(s_and_c_list, key = lambda x : x[0]) # sort according to sizes
     unique_sizes = [x[0] for x in s_and_c_list]
     unique_counts = [x[1] for x in s_and_c_list]
-    return unique_counts, unique_sizes
+    
+    full_size_list = list(range(optimal_size + 1))
+    full_counts_list = [unique_counts[unique_sizes.index(s)] if s in unique_sizes else 0 for s in full_size_list]
+    
+    return full_counts_list, full_size_list
     
 def compute_energy_expectation(counts, sizes, **kwargs):
     """
@@ -165,7 +170,31 @@ class qaoa_anstaz:
             self.optimal_size = optimal_size
         
         self.create_ansatz_circuit()
+        
+        # Do a random uniform sampling of strings and obtain corresponding distribution of cut sizes
+        self.random_sampling_dist()
     
+    def random_sampling_dist(self):
+        # Obtain num_shots number of uniform random samples between 0 and 2 ** nodes
+        unif_cuts = np.random.randint(2 ** self.nodes, size=self.num_shots).tolist()
+        unif_cuts_uniq = list(set(unif_cuts))
+
+        # Get counts corresponding to each sampled int/cut
+        unif_counts = [unif_cuts.count(cut) for cut in unif_cuts_uniq]
+        unif_cuts = list(set(unif_cuts))
+
+        def int_to_bs(numb):
+            # Function for converting from an integer to (bit)strings of length num_qubits
+            strr = format(numb, "b") #convert to binary
+            strr = '0' * (num_qubits - len(strr)) + strr
+            return strr
+
+        unif_cuts = [int_to_bs(i) for i in unif_cuts]
+        unif_sizes = [self.eval_cut(cut) for cut in unif_cuts]
+
+        # Also get the corresponding distribution of cut sizes
+        self.unif_dist_counts, self.unif_dist_sizes = get_size_dist(unif_counts, unif_sizes, self.optimal_size)
+            
     def draw_graph(self):
         "Draw graph"
         nx.draw(self.nxgraph)
@@ -214,18 +243,59 @@ class qaoa_anstaz:
         self.counts = list(cuts_counts_dict.values())
         self.sizes = [self.eval_cut(solution[::-1]) for solution in self.cuts] # Reverse each cut passed ot eval_cut, since qiskit uses the little-endian format
         
-        self.unique_counts, self.unique_sizes = get_size_dist(self.counts, self.sizes)
+        self.dist_counts, self.dist_sizes = get_size_dist(self.counts, self.sizes, self.optimal_size)
+        
         
         self.compute_all_metrics()
         
     def compute_all_metrics(self):
         self.best_measured_size = compute_best_cut_from_measured(self.counts, self.sizes)
-        self.gibbs = compute_gibbs(self.counts, self.sizes, self.eta)
-        self.cvar = compute_cvar(self.counts, self.sizes, self.alpha)
+        self.gibbs = compute_gibbs(self.counts, self.sizes, eta = self.eta)
+        self.cvar = compute_cvar(self.counts, self.sizes, alpha = self.alpha)
         self.energy_expectation = compute_energy_expectation(self.counts, self.sizes)
         
         self.bestcut_ratio = self.best_measured_size / self.optimal_size
+        self.gibbs_ratio = self.gibbs / self.optimal_size
+        self.cvar_ratio = self.cvar / self.optimal_size
+        self.approx_ratio = self.energy_expectation / self.optimal_size
         
+    def plot_cutsize_dist(self):
+        fig, axs = plt.subplots(1, 1)
+
+        suptitle = "Empirical Distribution of Cut Sizes\n Graph Size={}".format(self.nodes)
+        plt.title(suptitle)
+
+        axs.plot(self.dist_sizes, dist_counts, marker='o',
+                 ls='-', c='k', ms=2, mec='k', mew=0.4, lw=1,
+                 label=f"Circuit Sampling")
+
+        # Also plot the distribution obtained from uniform random sampling
+        axs.plot(dist['ratios'][indx], dist['frequencies'][indx],
+             marker='o', ms=1, mec = 'k',mew=0.2, lw=10,alpha=0.5,
+             ls = '-', label = "Uniform Random Sampling", c = "pink")  # " degree={deg}") # lw=1,
+
+        # Plot vertical lines corresponding to the various metrics
+        plotted_metric_values = []
+        for metric in ['approx_ratio', 'cvar_ratio', 'bestcut_ratio', 'gibbs_ratio']:
+            curdict = group_metrics_optgaps[metric]
+            curmetricval = curdict['ratiovals'][indx]
+            lw=1; ls='solid'
+            if curmetricval in plotted_metric_values:
+                # for lines that will coincide, assign different styles to distinguish them
+                lw=1.5; ls='dashed'
+            plotted_metric_values.append(curmetricval)
+            axs.axvline(x=curmetricval, color=curdict['color'], label=curdict['label'], lw=lw, ls=ls)
+            
+
+        axs.set_ylabel('Fraction of Total Counts')
+        axs.set_xlabel(r'$\frac{\mathrm{Cut\ Size}}{\mathrm{Max\ Cut\ Size}}$')
+        axs.grid()
+        axs.set_xlim(left=-0.02, right=1.02)
+        axs.legend(loc='upper left')
+
+        fig.tight_layout()
+
+    
 
     def create_ansatz_circuit(self):
         """
