@@ -7,6 +7,14 @@ import matplotlib.pyplot as plt
 from itertools import product as iterprod
 from qiskit.tools.visualization import circuit_drawer
 
+import json
+import os
+
+loc = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(loc, 'data', 'angles_regular_graphs.json'), 'r') as json_file:
+    fixed_angles_data = json.load(json_file)
+    
+    
 
 def get_size_dist(counts, sizes, optimal_size):
     """ For given measurement outcomes, i.e. combinations of counts and sizes, return counts corresponding to each cut size.
@@ -178,9 +186,92 @@ class qaoa_anstaz:
         
         self.create_ansatz_circuit()
         
+        self._bestcut_ratio = None
+        self._gibbs_ratio = None
+        self._cvar_ratio = None
+        self._approx_ratio = None
+        
+        self._svs_bestcut_ratio = None
+        self._svs_gibbs_ratio = None
+        self._svs_cvar_ratio = None
+        self._svs_approx_ratio = None
+        
         # Do a random uniform sampling of strings and obtain corresponding distribution of cut sizes
         self.random_sampling_dist()
+        
+        
+    @property
+    def gibbs_ratio(self):
+        if self._gibbs_ratio is None:
+            gibbs = compute_gibbs(self.counts, self.sizes, eta = self.eta)
+            self._gibbs_ratio = gibbs / self.optimal_size / self.eta
+        return self._gibbs_ratio
+            
+    @property
+    def bestcut_ratio(self):
+        if self._bestcut_ratio is None:
+            best_measured_size = compute_best_cut_from_measured(self.counts, self.sizes)
+            self._bestcut_ratio = best_measured_size / self.optimal_size
+        return self._bestcut_ratio
     
+    @property
+    def approx_ratio(self):
+        if self._approx_ratio is None:
+            energy_expectation = compute_energy_expectation(self.counts, self.sizes)
+            self._approx_ratio = energy_expectation / self.optimal_size
+        return self._approx_ratio
+    
+    @property
+    def cvar_ratio(self):
+        if self._cvar_ratio is None:
+            cvar = compute_cvar(self.counts, self.sizes, alpha = self.alpha)
+            self._cvar_ratio = cvar / self.optimal_size
+        return self._cvar_ratio
+    
+    @property
+    def svs_gibbs_ratio(self):
+        if self._svs_gibbs_ratio is None:
+            gibbs = compute_gibbs(self.svs_counts, self.svs_sizes, eta = self.eta)
+            self._svs_gibbs_ratio = gibbs / self.optimal_size / self.eta
+        return self._svs_gibbs_ratio
+            
+    @property
+    def svs_bestcut_ratio(self):
+        if self._svs_bestcut_ratio is None:
+            best_measured_size = compute_best_cut_from_measured(self.svs_counts, self.svs_sizes)
+            self._svs_bestcut_ratio = best_measured_size / self.optimal_size
+        return self._svs_bestcut_ratio
+    
+    @property
+    def svs_approx_ratio(self):
+        if self._svs_approx_ratio is None:
+            energy_expectation = compute_energy_expectation(self.svs_counts, self.svs_sizes)
+            self._svs_approx_ratio = energy_expectation / self.optimal_size
+        return self._svs_approx_ratio
+    
+    @property
+    def svs_cvar_ratio(self):
+        if self._svs_cvar_ratio is None:
+            cvar = compute_cvar(self.svs_counts, self.svs_sizes, alpha = self.alpha)
+            self._svs_cvar_ratio = cvar / self.optimal_size
+        return self._svs_cvar_ratio
+        
+    def svs_simulate(self):
+        """Implement a state vector simulation
+        """
+        # Create QAOA circuit
+        svs_circuit = self.circuit.copy()
+        svs_circuit.remove_final_measurements()
+        # Obtain probabilities using state vector simulation 
+        sv = Aer.get_backend('statevector_simulator')
+        svs_counts = execute(svs_circuit, sv).result().get_counts()
+        
+        self.svs_cuts = list(svs_counts.keys())
+        self.svs_counts = list(svs_counts.values())
+        self.svs_sizes = [self.eval_cut(solution[::-1]) for solution in self.svs_cuts] # Reverse each cut passed ot eval_cut, since qiskit uses the little-endian format
+        
+        self.svs_dist_counts, self.svs_dist_sizes = get_size_dist(self.svs_counts, self.svs_sizes, self.optimal_size)
+            
     def random_sampling_dist(self):
         # Obtain num_shots number of uniform random samples between 0 and 2 ** nodes
         unif_cuts = np.random.randint(2 ** self.nodes, size=self.num_shots).tolist()
@@ -253,19 +344,6 @@ class qaoa_anstaz:
         
         self.dist_counts, self.dist_sizes = get_size_dist(self.counts, self.sizes, self.optimal_size)
         
-        
-        self.compute_all_metrics()
-        
-    def compute_all_metrics(self):
-        self.best_measured_size = compute_best_cut_from_measured(self.counts, self.sizes)
-        self.gibbs = compute_gibbs(self.counts, self.sizes, eta = self.eta)
-        self.cvar = compute_cvar(self.counts, self.sizes, alpha = self.alpha)
-        self.energy_expectation = compute_energy_expectation(self.counts, self.sizes)
-        
-        self.bestcut_ratio = self.best_measured_size / self.optimal_size
-        self.gibbs_ratio = self.gibbs / self.optimal_size / self.eta
-        self.cvar_ratio = self.cvar / self.optimal_size
-        self.approx_ratio = self.energy_expectation / self.optimal_size
         
     def plot_cutsize_dist(self):
         fig, axs = plt.subplots(1, 1)
